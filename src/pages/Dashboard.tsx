@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Building2,
   Package,
@@ -15,7 +17,9 @@ import {
   LogOut,
   Pill,
   DollarSign,
-  User
+  User,
+  Loader2,
+  ChevronsUpDown
 } from "lucide-react";
 import { InventoryManager } from "@/components/InventoryManager";
 import { SalesInterface } from "@/components/SalesInterface";
@@ -23,11 +27,79 @@ import { CustomerManager } from "@/components/CustomerManager";
 import { ReportsAnalytics } from "@/components/ReportsAnalytics";
 import { SupplierManager } from "@/components/SupplierManager";
 import { AdminSettings } from "@/components/AdminSettings";
+import api from "@/lib/api";
+
+
+
+// Interface for dashboard stats
+interface DashboardStats {
+  total_revenue: number;
+  products_in_stock: number;
+  sales_today: number;
+  low_stock_alerts: number;
+  expiring_soon: number;
+}
+
+
+// Interfaces for sales data
+interface SaleItem {
+  product_name: string;
+  quantity: number;
+}
+
+interface Sale {
+  id: number;
+  user_name: string;
+  total_amount: string;
+  created_at: string;
+  items: SaleItem[];
+}
+
 
 const Dashboard = () => {
-  // NOTE: useNavigate and useEffect have been removed.
   const { user, signOut, hasRole } = useAuth();
   const [activeTab, setActiveTab] = useState("overview");
+  const [recentSales, setRecentSales] = useState<Sale[]>([]);
+  const [loadingSales, setLoadingSales] = useState(true);
+  const [salesError, setSalesError] = useState<string | null>(null);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [loadingStats, setLoadingStats] = useState(true);
+
+
+
+  useEffect(() => {
+    const fetchDashboardData = async () => {
+      if (hasRole(['admin', 'cashier', 'inventory_manager'])) {
+        try {
+          setLoadingSales(true);
+          const { data } = await api.get('/sales/');
+          setRecentSales(data.slice(0, 5) || []); // Get the 5 most recent sales
+        } catch (err) {
+          setSalesError("Failed to load recent sales.");
+        } finally {
+          setLoadingSales(false);
+        }
+
+        // Fetch Dashboard Stats
+        try {
+          setLoadingStats(true);
+          const statsResponse = await api.get('/dashboard-stats/');
+          setStats(statsResponse.data);
+        } catch (err) {
+          // Handle stats error separately if needed
+        } finally {
+          setLoadingStats(false);
+        }
+      } else {
+        setLoadingSales(false);
+        setLoadingStats(false);
+      }
+    };
+
+    if (activeTab === 'overview') {
+      fetchDashboardData();
+    }
+  }, [activeTab, hasRole]);
 
   const handleLogout = async () => {
     await signOut();
@@ -144,8 +216,14 @@ const Dashboard = () => {
                   <DollarSign className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold">$12,345</div>
-                  <p className="text-xs text-muted-foreground">+20.1% from last month</p>
+                  {loadingStats ? <Loader2 className="h-6 w-6 animate-spin" /> : (
+                    <>
+                      <div className="text-2xl font-bold">
+                        {stats?.total_revenue.toLocaleString('en-US', { style: 'currency', currency: 'UGX' }) ?? '...'}
+                      </div>
+                      <p className="text-xs text-muted-foreground">All-time sales revenue</p>
+                    </>
+                  )}
                 </CardContent>
               </Card>
 
@@ -155,8 +233,14 @@ const Dashboard = () => {
                   <Package className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold">1,234</div>
-                  <p className="text-xs text-muted-foreground">23 low stock alerts</p>
+                  {loadingStats ? <Loader2 className="h-6 w-6 animate-spin" /> : (
+                    <>
+                      <div className="text-2xl font-bold">{stats?.products_in_stock ?? '...'}</div>
+                      <p className="text-xs text-muted-foreground">
+                        {stats?.low_stock_alerts ?? '0'} low stock alerts
+                      </p>
+                    </>
+                  )}
                 </CardContent>
               </Card>
 
@@ -166,8 +250,12 @@ const Dashboard = () => {
                   <ShoppingCart className="h-4 w-4 text-muted-foreground" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold">89</div>
-                  <p className="text-xs text-muted-foreground">+12% from yesterday</p>
+                  {loadingStats ? <Loader2 className="h-6 w-6 animate-spin" /> : (
+                    <>
+                      <div className="text-2xl font-bold">+{stats?.sales_today ?? '...'}</div>
+                      <p className="text-xs text-muted-foreground">New transactions today</p>
+                    </>
+                  )}
                 </CardContent>
               </Card>
 
@@ -177,8 +265,12 @@ const Dashboard = () => {
                   <AlertTriangle className="h-4 w-4 text-yellow-500" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold">15</div>
-                  <p className="text-xs text-muted-foreground">Within 30 days</p>
+                  {loadingStats ? <Loader2 className="h-6 w-6 animate-spin" /> : (
+                    <>
+                      <div className="text-2xl font-bold">{stats?.expiring_soon ?? '...'}</div>
+                      <p className="text-xs text-muted-foreground">Within 30 days</p>
+                    </>
+                  )}
                 </CardContent>
               </Card>
             </div>
@@ -187,19 +279,44 @@ const Dashboard = () => {
               <Card>
                 <CardHeader>
                   <CardTitle>Recent Sales</CardTitle>
-                  <CardDescription>Latest transactions from today</CardDescription>
+                  <CardDescription>Your 5 most recent transactions.</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="space-y-3">
-                    {[1, 2, 3, 4, 5].map((i) => (
-                      <div key={i} className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm font-medium">Sale #{i.toString().padStart(4, '0')}</p>
-                          <p className="text-xs text-gray-500">{new Date().toLocaleTimeString()}</p>
-                        </div>
-                        <div className="text-sm font-bold">${(Math.random() * 100 + 10).toFixed(2)}</div>
-                      </div>
+                  <div className="space-y-2">
+                    {loadingSales && <div className="flex justify-center p-4"><Loader2 className="h-6 w-6 animate-spin text-teal-600" /></div>}
+                    {salesError && <Alert variant="destructive"><AlertDescription>{salesError}</AlertDescription></Alert>}
+                    {!loadingSales && !salesError && recentSales.length > 0 && recentSales.map((sale) => (
+                      <Collapsible key={sale.id} className="border rounded-lg">
+                        <CollapsibleTrigger asChild>
+                          <div className="flex items-center justify-between p-3 cursor-pointer hover:bg-gray-50">
+                            <div>
+                              <p className="text-sm font-medium">Sale #{sale.id}</p>
+                              <p className="text-xs text-gray-500">
+                                {new Date(sale.created_at).toLocaleDateString()} by {sale.user_name}
+                              </p>
+                            </div>
+                            <div className="flex items-center">
+                              <span className="text-sm font-bold mr-2 text-teal-700">
+                                {parseFloat(sale.total_amount).toLocaleString('en-US', { style: 'currency', currency: 'UGX' })}
+                              </span>
+                              <ChevronsUpDown className="h-4 w-4 text-gray-400" />
+                            </div>
+                          </div>
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="p-3 border-t bg-gray-50">
+                          <ul className="space-y-1 list-disc list-inside text-xs text-gray-600">
+                            {sale.items.map((item, index) => (
+                              <li key={index}>
+                                {item.quantity} x {item.product_name}
+                              </li>
+                              ))}
+                          </ul>
+                        </CollapsibleContent>
+                      </Collapsible>
                     ))}
+                    {!loadingSales && !salesError && recentSales.length === 0 && (
+                      <p className="text-center text-gray-500 py-4">No sales have been recorded yet.</p>
+                    )}
                   </div>
                 </CardContent>
               </Card>

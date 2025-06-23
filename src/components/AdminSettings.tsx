@@ -10,11 +10,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
-import { Settings, Users, Shield, Database, Download, Upload, Calendar, AlertTriangle } from "lucide-react";
-import { Edit, Trash2, AlertCircle, CheckCircle } from 'lucide-react';
+import { Settings, Users, Shield, Database, Download, Upload, Calendar, AlertTriangle, PlusCircle } from "lucide-react";
+import { Edit, Trash2, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import api from "@/lib/api";
 import { useToast } from "@/components/ui/use-toast"; // Import useToast for notifications
-// Import the AlertDialog components for the confirmation popup
 import {
   AlertDialog,
   AlertDialogAction,
@@ -46,6 +45,25 @@ interface User {
   created_at: string;
 }
 
+// Add interface for Product (for the multi-select)
+interface Product {
+  id: number;
+  name: string;
+}
+
+// Add interface for Promotion
+interface Promotion {
+  id: number;
+  name: string;
+  description: string;
+  value: number;
+  start_date: string;
+  end_date: string;
+  is_active: boolean;
+  products: number[]; // Array of product IDs
+}
+
+
 // Define a single state shape for our forms
 interface UserFormData {
   name: string;
@@ -56,6 +74,18 @@ interface UserFormData {
   status: 'active' | 'inactive';
 }
 
+// Define an interface for our settings object to match backend keys
+interface SystemSettings {
+  business_name: string;
+  business_address: string;
+  business_phone: string;
+  business_email: string;
+  tax_rate: number;
+  currency: string;
+  low_stock_alert_threshold: number;
+  expiry_alert_days: number;
+}
+
 export const AdminSettings = () => {
   // Get the currently logged-in user to prevent self-deletion
   const { user: loggedInUser, hasRole } = useAuth();
@@ -63,18 +93,18 @@ export const AdminSettings = () => {
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // State for all settings, matching the backend model keys
+  const [settings, setSettings] = useState<Partial<SystemSettings>>({});
+  const [isSaving, setIsSaving] = useState(false);
 
-  const [settings, setSettings] = useState({
-    autoBackup: true,
-    lowStockAlert: 10,
-    expiryAlert: 30,
-    taxRate: 8.0,
-    currency: "USD",
-    businessName: "VetPOS Clinic",
-    businessAddress: "123 Veterinary Street, Medical City",
-    businessPhone: "+1234567890",
-    businessEmail: "info@vetpos.com"
-  });
+  // --- START: State for Promotions ---
+  const [promotions, setPromotions] = useState<Promotion[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [isAddPromotionOpen, setIsAddPromotionOpen] = useState(false);
+  const [editingPromotion, setEditingPromotion] = useState<Promotion | null>(null);
+  const [isEditPromotionOpen, setIsEditPromotionOpen] = useState(false);
+  const [promoLoading, setPromoLoading] = useState(false);
+  // --- END: State for Promotions ---
 
   // --- START: State for Edit User Dialog ---
   const [isEditUserOpen, setIsEditUserOpen] = useState(false);
@@ -107,6 +137,48 @@ export const AdminSettings = () => {
     setError('');
     setSuccess('');
   };
+
+  // --- START: Functions for fetching and saving settings ---
+  const fetchSettings = async () => {
+    try {
+      const { data } = await api.get('/settings/');
+      // Backend sends numbers as strings, so we parse them
+      const parsedSettings = {
+        ...data,
+        tax_rate: parseFloat(data.tax_rate) || 0,
+        low_stock_alert_threshold: parseInt(data.low_stock_alert_threshold, 10) || 10,
+        expiry_alert_days: parseInt(data.expiry_alert_days, 10) || 30, 
+      };
+      setSettings(parsedSettings);
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Failed to load settings",
+        description: "Could not fetch system configuration from the server.",
+      });
+    }
+  };
+
+  const handleSaveSettings = async () => {
+    setIsSaving(true);
+    try {
+      await api.post('/settings/', settings);
+      toast({
+        title: "Success",
+        description: "Settings have been saved successfully.",
+      });
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Save Failed",
+        description: "Could not save the settings.",
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+  // --- END: Functions for fetching and saving settings ---
+
 
   // --- START: Handler for Updating a User ---
   const handleUpdateUser = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -178,6 +250,65 @@ export const AdminSettings = () => {
   };
   // --- END: Handler for Deleting a User ---
 
+  // --- START: Functions for Promotions ---
+  const fetchPromotions = async () => {
+    setPromoLoading(true);
+    try {
+      const { data } = await api.get('/promotions/');
+      setPromotions(data || []);
+    } catch (err) {
+      toast({ variant: "destructive", title: "Failed to load promotions" });
+    } finally {
+      setPromoLoading(false);
+    }
+  };
+
+  const fetchProductsForPromo = async () => {
+    try {
+      const { data } = await api.get('/products/');
+      setProducts(data || []);
+    } catch (err) {
+      toast({ variant: "destructive", title: "Failed to load products for promotions" });
+    }
+  };
+
+   const handleSavePromotion = async (promoData: Omit<Promotion, 'id'> | Promotion) => {
+    setIsSubmitting(true);
+    try {
+      if ('id' in promoData) {
+        // Editing existing promotion
+        await api.patch(`/promotions/${promoData.id}/`, promoData);
+        toast({ title: "Success", description: "Promotion updated successfully." });
+      } else {
+        // Creating new promotion
+        await api.post('/promotions/', promoData);
+        toast({ title: "Success", description: "Promotion created successfully." });
+      }
+      fetchPromotions();
+      setIsAddPromotionOpen(false);
+      setIsEditPromotionOpen(false);
+      setEditingPromotion(null);
+    } catch (err: any) {
+      const errorMsg = err.response?.data?.detail || "An error occurred.";
+      toast({ variant: "destructive", title: "Save Failed", description: errorMsg });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+
+  const handleDeletePromotion = async (promoId: number) => {
+    try {
+      await api.delete(`/promotions/${promoId}/`);
+      toast({ title: "Success", description: "Promotion deleted." });
+      fetchPromotions();
+    } catch (err) {
+      toast({ variant: "destructive", title: "Deletion Failed" });
+    }
+  };
+  // --- END: Functions for Promotions ---
+
+
 
   const getRoleColor = (role: string) => {
     switch (role) {
@@ -223,8 +354,11 @@ export const AdminSettings = () => {
   useEffect(() => {
     if (hasRole('admin')) {
       fetchUsers();
+      fetchSettings(); // Fetch settings when the component loads
+      fetchPromotions();
+      fetchProductsForPromo();
     }
-  }, []);
+  }, [hasRole]);
 
   const handleAddUser = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -277,6 +411,7 @@ export const AdminSettings = () => {
       <Tabs defaultValue="general" className="w-full">
         <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="general">General</TabsTrigger>
+          <TabsTrigger value="promotions">Promotions</TabsTrigger>
           <TabsTrigger value="users">Users</TabsTrigger>
           <TabsTrigger value="backup">Backup</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
@@ -293,35 +428,32 @@ export const AdminSettings = () => {
                 <div className="space-y-2">
                   <Label>Business Name</Label>
                   <Input
-                    value={settings.businessName}
-                    onChange={(e) => setSettings({ ...settings, businessName: e.target.value })}
+                    value={settings.business_name || ''}
+                    onChange={(e) => setSettings({ ...settings, business_name: e.target.value })}
                   />
                 </div>
                 <div className="space-y-2">
                   <Label>Address</Label>
                   <Input
-                    value={settings.businessAddress}
-                    onChange={(e) => setSettings({ ...settings, businessAddress: e.target.value })}
+                    value={settings.business_address || ''}
+                    onChange={(e) => setSettings({ ...settings, business_address: e.target.value })}
                   />
                 </div>
                 <div className="space-y-2">
                   <Label>Phone</Label>
                   <Input
-                    value={settings.businessPhone}
-                    onChange={(e) => setSettings({ ...settings, businessPhone: e.target.value })}
+                    value={settings.business_phone || ''}
+                    onChange={(e) => setSettings({ ...settings, business_phone: e.target.value })}
                   />
                 </div>
                 <div className="space-y-2">
                   <Label>Email</Label>
                   <Input
                     type="email"
-                    value={settings.businessEmail}
-                    onChange={(e) => setSettings({ ...settings, businessEmail: e.target.value })}
+                    value={settings.business_email || ''}
+                    onChange={(e) => setSettings({ ...settings, business_email: e.target.value })}
                   />
                 </div>
-                <Button className="w-full bg-teal-600 hover:bg-teal-700">
-                  Save Business Info
-                </Button>
               </CardContent>
             </Card>
 
@@ -336,17 +468,18 @@ export const AdminSettings = () => {
                   <Input
                     type="number"
                     step="0.1"
-                    value={settings.taxRate}
-                    onChange={(e) => setSettings({ ...settings, taxRate: parseFloat(e.target.value) })}
+                    value={settings.tax_rate || 0}
+                    onChange={(e) => setSettings({ ...settings, tax_rate: parseFloat(e.target.value) })}
                   />
                 </div>
                 <div className="space-y-2">
                   <Label>Currency</Label>
                   <select
-                    value={settings.currency}
+                    value={settings.currency || 'UGX'}
                     onChange={(e) => setSettings({ ...settings, currency: e.target.value })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md"
                   >
+                    <option value="UGX">UGX (Sh)</option>
                     <option value="USD">USD ($)</option>
                     <option value="EUR">EUR (€)</option>
                     <option value="GBP">GBP (£)</option>
@@ -356,25 +489,103 @@ export const AdminSettings = () => {
                   <Label>Low Stock Alert Threshold</Label>
                   <Input
                     type="number"
-                    value={settings.lowStockAlert}
-                    onChange={(e) => setSettings({ ...settings, lowStockAlert: parseInt(e.target.value) })}
+                    value={settings.low_stock_alert_threshold || 10}
+                    onChange={(e) => setSettings({ ...settings, low_stock_alert_threshold: parseInt(e.target.value) })}
                   />
                 </div>
                 <div className="space-y-2">
                   <Label>Expiry Alert (days before)</Label>
                   <Input
                     type="number"
-                    value={settings.expiryAlert}
-                    onChange={(e) => setSettings({ ...settings, expiryAlert: parseInt(e.target.value) })}
+                    value={settings.expiry_alert_days || 30}
+                    onChange={(e) => setSettings({ ...settings, expiry_alert_days: parseInt(e.target.value) })}
                   />
                 </div>
-                <Button className="w-full bg-teal-600 hover:bg-teal-700">
-                  Save Configuration
-                </Button>
               </CardContent>
             </Card>
           </div>
+          <Button onClick={handleSaveSettings} className="w-full bg-teal-600 hover:bg-teal-700" disabled={isSaving}>
+            {isSaving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+            {isSaving ? 'Saving...' : 'Save All General Settings'}
+          </Button>
         </TabsContent>
+
+        {/* --- START: Promotions Tab --- */}
+        <TabsContent value="promotions" className="space-y-4">
+          <div className="flex justify-between items-center">
+            <h3 className="text-lg font-semibold">Promotions Management</h3>
+            <Button className="bg-teal-600 hover:bg-teal-700" onClick={() => setIsAddPromotionOpen(true)}>
+              <PlusCircle className="h-4 w-4 mr-2" />
+              Create Promotion
+            </Button>
+          </div>
+
+          <PromotionDialog
+            isOpen={isAddPromotionOpen}
+            onClose={() => setIsAddPromotionOpen(false)}
+            onSave={handleSavePromotion}
+            products={products}
+            isSubmitting={isSubmitting}
+          />
+
+          <PromotionDialog
+            isOpen={isEditPromotionOpen}
+            onClose={() => { setIsEditPromotionOpen(false); setEditingPromotion(null); }}
+            onSave={handleSavePromotion}
+            products={products}
+            isSubmitting={isSubmitting}
+            promotion={editingPromotion}
+          />
+           <Card>
+            <CardContent className="p-0">
+              {promoLoading ? (
+                <div className="p-6 text-center">Loading promotions...</div>
+              ) : (
+                <div className="space-y-1">
+                  {promotions.map((promo) => (
+                    <div key={promo.id} className="flex items-center justify-between p-4 border-b last:border-b-0">
+                      <div>
+                        <p className="font-medium">{promo.name} ({promo.value}%)</p>
+                        <p className="text-sm text-gray-600">{promo.description}</p>
+                        <p className="text-xs text-gray-500">
+                          Active from {new Date(promo.start_date).toLocaleDateString()} to {new Date(promo.end_date).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <Badge className={promo.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}>
+                          {promo.is_active ? 'ACTIVE' : 'INACTIVE'}
+                        </Badge>
+                        <Button variant="outline" size="sm" onClick={() => { setEditingPromotion(promo); setIsEditPromotionOpen(true); }}>
+                          Edit
+                        </Button>
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button variant="destructive" size="icon" className="h-8 w-8">
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                            </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Delete Promotion?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                This will permanently delete the promotion: <span className="font-semibold">{promo.name}</span>.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction onClick={() => handleDeletePromotion(promo.id)}>Continue</AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+        {/* --- END: Promotions Tab --- */}
 
         <TabsContent value="users" className="space-y-4">
           <div className="flex justify-between items-center">
@@ -601,8 +812,8 @@ export const AdminSettings = () => {
                     <p className="text-sm text-gray-600">Backup data every day at 2:00 AM</p>
                   </div>
                   <Switch
-                    checked={settings.autoBackup}
-                    onCheckedChange={(checked) => setSettings({ ...settings, autoBackup: checked })}
+                    // checked={settings.autoBackup}
+                    // onCheckedChange={(checked) => setSettings({ ...settings, autoBackup: checked })}
                   />
                 </div>
                 <Button onClick={createBackup} className="w-full bg-blue-600 hover:bg-blue-700">
@@ -741,5 +952,120 @@ export const AdminSettings = () => {
         </TabsContent>
       </Tabs>
     </div>
+  );
+};
+
+
+// --- START: Promotion Dialog Component ---
+// A reusable dialog for adding/editing promotions
+
+interface PromotionDialogProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSave: (promoData: Omit<Promotion, 'id'> | Promotion) => void;
+  products: Product[];
+  isSubmitting: boolean;
+  promotion?: Promotion | null;
+}
+
+const PromotionDialog = ({ isOpen, onClose, onSave, products, isSubmitting, promotion }: PromotionDialogProps) => {
+  const [formData, setFormData] = useState<Omit<Promotion, 'id' | 'products'> & { products: number[] }>({
+    name: '',
+    description: '',
+    value: 0,
+    start_date: '',
+    end_date: '',
+    is_active: true,
+    products: [],
+  });
+
+  useEffect(() => {
+    if (promotion) {
+      setFormData({
+           name: promotion.name,
+        description: promotion.description,
+        value: promotion.value,
+        start_date: promotion.start_date,
+        end_date: promotion.end_date,
+        is_active: promotion.is_active,
+        products: promotion.products,
+      });
+    } else {
+      // Reset for new promotion
+      setFormData({
+        name: '',
+        description: '',
+        value: 0,
+        start_date: '',
+        end_date: '',
+        is_active: true,
+        products: [],
+      });
+    }
+  }, [promotion, isOpen]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const dataToSave = promotion ? { ...formData, id: promotion.id } : formData;
+    onSave(dataToSave);
+  };
+
+  const handleProductSelection = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const selectedIds = Array.from(e.target.selectedOptions, option => parseInt(option.value));
+    setFormData({ ...formData, products: selectedIds });
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{promotion ? 'Edit Promotion' : 'Create New Promotion'}</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <Label>Promotion Name</Label>
+            <Input value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} required />
+          </div>
+          <div className="space-y-2">
+            <Label>Description</Label>
+            <Input value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} />
+          </div>
+          <div className="space-y-2">
+            <Label>Discount Value (%)</Label>
+            <Input type="number" step="0.01" value={formData.value} onChange={(e) => setFormData({ ...formData, value: parseFloat(e.target.value) || 0 })} required />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>Start Date</Label>
+              <Input type="date" value={formData.start_date} onChange={(e) => setFormData({ ...formData, start_date: e.target.value })} required />
+            </div>
+            <div className="space-y-2">
+              <Label>End Date</Label>
+              <Input type="date" value={formData.end_date} onChange={(e) => setFormData({ ...formData, end_date: e.target.value })} required />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label>Applicable Products (Ctrl/Cmd + Click to select multiple)</Label>
+            <select
+              multiple
+              value={formData.products.map(String)}
+              onChange={handleProductSelection}
+              className="w-full h-32 p-2 border rounded-md"
+            >
+              {products.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center justify-between rounded-lg border p-3">
+            <Label>Active</Label>
+            <Switch checked={formData.is_active} onCheckedChange={(checked) => setFormData({ ...formData, is_active: checked })} />
+          </div>
+          <Button type="submit" className="w-full bg-teal-600 hover:bg-teal-700" disabled={isSubmitting}>
+            {isSubmitting ? 'Saving...' : 'Save Promotion'}
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 };
